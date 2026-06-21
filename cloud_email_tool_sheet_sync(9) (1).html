@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบออกตารางอีเมลทดสอบบริการ Cloud (Dynamic Portal Version)</title>
+    <style>
+        body {
+            font-family: 'Sans Serif', Arial, Helvetica, sans-serif;
+            background-color: #f4f6f9;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        .container {
+            max-width: 950px;
+            margin: 0 auto;
+            background: #ffffff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #005a95;
+            font-size: 22px;
+            margin-top: 0;
+            border-bottom: 2px solid #005a95;
+            padding-bottom: 10px;
+        }
+        .control-panel {
+            background: #eef5f9;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        label {
+            font-weight: bold;
+        }
+        input[type="text"], select {
+            padding: 8px 12px;
+            font-size: 15px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            font-family: 'Sans Serif', sans-serif;
+        }
+        input[type="text"] {
+            width: 200px;
+        }
+        button {
+            background-color: #005a95;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            font-size: 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: 0.2s;
+            font-family: 'Sans Serif', sans-serif;
+        }
+        button:hover {
+            background-color: #004471;
+        }
+        .btn-copy {
+            background-color: #28a745;
+        }
+        .btn-copy:hover {
+            background-color: #218838;
+        }
+        #status {
+            font-weight: bold;
+            color: #28a745;
+        }
+        #preview-box {
+            border: 2px dashed #999;
+            padding: 20px;
+            background: #fff;
+            margin-top: 15px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>ระบบดึงข้อมูลรายเคสด้วยเลข POC (เวอร์ชันน้อง Faii)</h1>
+    
+    <div class="control-panel">
+        <label for="poc-input">กรอกเลข POC:</label>
+        <input type="text" id="poc-input" placeholder="ตัวอย่าง: POC-202606060891" value="POC-202606060891">
+        
+        <label for="portal-select">เลือกประเภท Portal:</label>
+        <select id="portal-select">
+            <option value="proxmox">Proxmox</option>
+            <option value="ahv">AHV</option>
+        </select>
+
+        <button onclick="searchAndRenderFull()">🔍 ดึงข้อมูลตารางแบบเต็ม</button>
+        <button class="btn-copy" onclick="copyHTMLCode()">📋 คัดลอกโค้ด HTML ทั้งชุด</button>
+        <span id="status">ระบบพร้อมทำงาน</span>
+    </div>
+
+    <h3>🔍 ตัวอย่างผลลัพธ์ที่จะไปปรากฏในอีเมล (Preview):</h3>
+    <div id="preview-box">
+        <div style="text-align: center; font-family: 'Sans Serif', sans-serif; color: #666; padding: 4px;">กรุณากรอกข้อมูลแล้วกดปุ่มดึงข้อมูล</div>
+    </div>
+</div>
+
+<script>
+// ดึงข้อมูลจาก Google Sheet ที่ Publish เป็น CSV แล้ว
+// ใช้ Published URL ตัวใหม่ที่น้อง Faii แชร์: /spreadsheets/d/e/.../pub?output=csv
+// ใช้ CSV ผ่าน CORS Proxy เป็นวิธีหลัก เพื่อแก้ Failed to fetch / JSONP ถูกบล็อก
+const SHEET_PUBLISHED_ID = "2PACX-1vTkBUAGXpN9uRjU5tKhpzJ56gmAzQkCTjl-YOpN8AOqu99piBaea08vuJY4ncEOegs8O-NdIZJ1xeDw";
+const SHEET_GID = "0"; // ถ้าข้อมูลอยู่แท็บอื่น ให้เปลี่ยน gid ของแท็บนั้นตรงนี้
+const SHEET_GVIZ_URL = `https://docs.google.com/spreadsheets/d/e/${SHEET_PUBLISHED_ID}/gviz/tq`;
+const SHEET_CSV_URL = `https://docs.google.com/spreadsheets/d/e/${SHEET_PUBLISHED_ID}/pub?output=csv&gid=${SHEET_GID}`;
+let sheetDatabase = [];
+let lastSyncTime = null;
+
+const COLUMN_ALIASES = {
+    owner: ["owner", "ผู้ดูแล", "เจ้าของ"],
+    pocNumber: ["pocnumber", "poc number", "poc", "เลขpoc", "เลข poc", "so-number", "so number", "sonumber"],
+    cusNo: ["cusno", "cus no", "customer no", "customerno", "เลขลูกค้า"],
+    saleEmail: ["saleemail", "sale email", "sales email", "salesemail", "email sale", "ฝ่ายขาย"],
+    contactPerson: ["contactperson", "contact person", "ผู้ติดต่อ", "contact"],
+    customerTel: ["customertel", "customer tel", "tel", "telephone", "เบอร์", "เบอร์โทร"],
+    customerEmail: ["customeremail", "customer email", "email", "อีเมลลูกค้า"],
+    status: ["status", "สถานะ"],
+    uat: ["uat"],
+    remark: ["remark", "remarks", "หมายเหตุ"],
+    package: ["package", "แพ็กเกจ", "แพคเกจ"],
+    backup: ["backup", "แบคอัพ"],
+    customerName: ["customer", "customername", "customer name", "ชื่อลูกค้า", "ชื่อบริษัท", "บริษัท", "company", "company name"],
+    startDate: ["startdate", "start date", "วันที่เริ่ม", "วันเริ่ม", "เริ่มทดสอบ"],
+    endDate: ["enddate", "end date", "วันที่สิ้นสุด", "วันสิ้นสุด", "หมดอายุ", "สิ้นสุดทดสอบ"],
+    serviceType: ["servicetype", "service type", "service", "บริการ"],
+    portalUser: ["portaluser", "portal user", "username portal", "portal username", "user portal"],
+    portalLink: ["portallink", "portal link", "link portal", "url portal"],
+    vmName: ["vmname", "vm name", "ชื่อvm", "ชื่อ vm"],
+    ipPrivate: ["ipprivate", "ip private", "private ip", "ip ภายใน"],
+    ipPublic: ["ippublic", "ip public", "public ip", "ip ภายนอก"],
+    sshPort: ["sshport", "ssh port", "port ssh", "nat port", "port"],
+    vmUser: ["vmuser", "vm user", "username vm", "user vm", "username"],
+    vCpu: ["vcpu", "vcpu core", "vcpu (core)", "cpu", "core"],
+    vRam: ["vram", "vram gb", "vram (gb)", "ram"],
+    vDisk: ["vdisk", "vdisk gb", "vdisk (gb)", "disk"],
+    os: ["os", "operating system"]
+};
+
+function normalizeHeader(value) {
+    return String(value || "")
+        .replace(/^\ufeff/, "")
+        .replace(/\u200b/g, "")
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_\-()#/.:]+/g, "");
+}
+
+function normalizePoc(value) {
+    return String(value || "")
+        .replace(/^\ufeff/, "")
+        .replace(/[\u200b\u200c\u200d\uFEFF]/g, "")
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, "")
+        .replace(/[‐‑‒–—―−]/g, "-");
+}
+
+function pocDigits(value) {
+    return String(value || "").replace(/[^0-9]/g, "");
+}
+
+function isSamePoc(a, b) {
+    const na = normalizePoc(a);
+    const nb = normalizePoc(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+
+    // เทียบจากตัวเลขล้วน เพื่อแก้ปัญหาเครื่องหมายขีด/ช่องว่าง/อักขระแฝงไม่เหมือนกัน
+    const da = pocDigits(na);
+    const db = pocDigits(nb);
+    return da !== "" && db !== "" && da === db;
+}
+
+function parseCSV(csvText) {
+    const rows = [];
+    let row = [];
+    let cell = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < csvText.length; i++) {
+        const char = csvText[i];
+        const next = csvText[i + 1];
+
+        if (char === '"') {
+            if (inQuotes && next === '"') {
+                cell += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (char === ',' && !inQuotes) {
+            row.push(cell.trim());
+            cell = "";
+        } else if ((char === '\n' || char === '\r') && !inQuotes) {
+            if (char === '\r' && next === '\n') i++;
+            row.push(cell.trim());
+            if (row.some(v => String(v).trim() !== "")) rows.push(row);
+            row = [];
+            cell = "";
+        } else {
+            cell += char;
+        }
+    }
+
+    row.push(cell.trim());
+    if (row.some(v => String(v).trim() !== "")) rows.push(row);
+    return rows;
+}
+
+function getCellByAliases(rowObject, aliases) {
+    for (const alias of aliases) {
+        const key = normalizeHeader(alias);
+        if (rowObject[key] !== undefined && rowObject[key] !== null && String(rowObject[key]).trim() !== "") {
+            return String(rowObject[key]).trim();
+        }
+    }
+    return "";
+}
+
+function findPocFromAnyCell(rowObject) {
+    const values = rowObject.__rawValues || Object.values(rowObject);
+    for (const value of values) {
+        const text = String(value || "").trim();
+        if (/POC\s*[-–—]?\s*\d+/i.test(text)) {
+            const match = text.match(/POC\s*[-–—]?\s*\d+/i);
+            return normalizePoc(match[0]).replace(/^POC(\d)/, "POC-$1");
+        }
+    }
+    return "";
+}
+
+function mapSheetRowToData(rowObject) {
+    const data = {};
+    for (const [field, aliases] of Object.entries(COLUMN_ALIASES)) {
+        data[field] = getCellByAliases(rowObject, aliases);
+    }
+
+    const fallbackPoc = findPocFromAnyCell(rowObject);
+
+    // ค่า default กันช่องว่าง เพื่อไม่ให้ตารางแสดง undefined
+    return {
+        owner: data.owner || "-",
+        pocNumber: data.pocNumber || fallbackPoc || "-",
+        cusNo: data.cusNo || "-",
+        saleEmail: data.saleEmail || "-",
+        contactPerson: data.contactPerson || "-",
+        customerTel: data.customerTel || "-",
+        customerEmail: data.customerEmail || data.portalUser || "XXX@XXX.com",
+        status: data.status || "-",
+        uat: data.uat || "-",
+        remark: data.remark || "-",
+        package: data.package || "-",
+        backup: data.backup || "-",
+        customerName: data.customerName || (rowObject.__rawValues && rowObject.__rawValues[14]) || "-",
+        startDate: data.startDate || "-",
+        endDate: data.endDate || "-",
+        serviceType: data.serviceType || "IaaS",
+        portalUser: data.portalUser || data.customerEmail || "XXX",
+        portalLink: data.portalLink || "XXX",
+        vmName: data.vmName || "-",
+        ipPrivate: data.ipPrivate || "-",
+        ipPublic: data.ipPublic || "-",
+        sshPort: data.sshPort || "",
+        vmUser: data.vmUser || "-",
+        vCpu: data.vCpu || "-",
+        vRam: data.vRam || "-",
+        vDisk: data.vDisk || "-",
+        os: data.os || "-",
+        __rawValues: rowObject.__rawValues || []
+    };
+}
+
+function findHeaderRowIndex(rows) {
+    // รองรับ Sheet ที่มีแถวหัวเรื่อง/แถวว่างก่อน header จริง
+    const allAliases = Object.values(COLUMN_ALIASES).flat().map(normalizeHeader);
+    let bestIndex = 0;
+    let bestScore = -1;
+
+    rows.slice(0, 20).forEach((row, index) => {
+        const normalizedCells = row.map(normalizeHeader);
+        let score = 0;
+        normalizedCells.forEach(cell => {
+            if (allAliases.includes(cell)) score++;
+            if (["poc", "pocnumber", "sonumber", "so", "เลขpoc"].includes(cell)) score += 3;
+        });
+        if (score > bestScore) {
+            bestScore = score;
+            bestIndex = index;
+        }
+    });
+
+    return bestIndex;
+}
+
+function gvizTableToRows(table) {
+    const rows = [];
+    const labels = (table.cols || []).map((col, index) => String(col.label || col.id || `Column ${index + 1}`).trim());
+    if (labels.some(v => v !== "")) rows.push(labels);
+
+    (table.rows || []).forEach(r => {
+        const row = (r.c || []).map(cell => {
+            if (!cell) return "";
+            if (cell.f !== undefined && cell.f !== null) return String(cell.f).trim();
+            if (cell.v !== undefined && cell.v !== null) return String(cell.v).trim();
+            return "";
+        });
+        if (row.some(v => String(v).trim() !== "")) rows.push(row);
+    });
+    return rows;
+}
+
+function loadSheetRowsByJsonp() {
+    return new Promise((resolve, reject) => {
+        const callbackName = `sheetCallback_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+        const script = document.createElement("script");
+        const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error("โหลด Google Sheet ไม่สำเร็จ: JSONP timeout"));
+        }, 15000);
+
+        function cleanup() {
+            clearTimeout(timeout);
+            if (script.parentNode) script.parentNode.removeChild(script);
+            try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+        }
+
+        window[callbackName] = function(response) {
+            cleanup();
+            if (!response || response.status === "error") {
+                const msg = response?.errors?.[0]?.detailed_message || response?.errors?.[0]?.message || "Google Sheet ตอบกลับเป็น error";
+                reject(new Error(msg));
+                return;
+            }
+            resolve(gvizTableToRows(response.table || {}));
+        };
+
+        const params = new URLSearchParams({
+            tqx: `responseHandler:${callbackName};out:json`,
+            tq: "select *",
+            cacheBust: String(Date.now())
+        });
+        script.onerror = () => {
+            cleanup();
+            reject(new Error("โหลด Google Sheet ไม่สำเร็จ: script/jsonp ถูกบล็อก"));
+        };
+        script.src = `${SHEET_GVIZ_URL}?${params.toString()}`;
+        document.body.appendChild(script);
+    });
+}
+
+async function fetchTextWithTimeout(url, timeoutMs = 20000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.text();
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function loadSheetRowsByCsvFallback() {
+    const directUrl = `${SHEET_CSV_URL}${SHEET_CSV_URL.includes("?") ? "&" : "?"}sync=${Date.now()}`;
+
+    // เปิดจากไฟล์ในเครื่องหรือบาง Web Server อาจติด CORS จึงใส่ proxy สำรองไว้
+    const urls = [
+        directUrl,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(directUrl)}`,
+        `https://corsproxy.io/?${encodeURIComponent(directUrl)}`,
+        `https://thingproxy.freeboard.io/fetch/${directUrl}`
+    ];
+
+    const errors = [];
+    for (const url of urls) {
+        try {
+            const text = await fetchTextWithTimeout(url);
+            const rows = parseCSV(text);
+            if (rows.length > 0) return rows;
+            errors.push("CSV ว่าง");
+        } catch (error) {
+            errors.push(error.message || String(error));
+        }
+    }
+    throw new Error(`CSV โหลดไม่สำเร็จ: ${errors.join(" | ")}`);
+}
+
+async function loadSheetData(forceReload = false) {
+    if (!forceReload && sheetDatabase.length > 0) return sheetDatabase;
+
+    let rows = [];
+    const errors = [];
+
+    try {
+        // วิธีหลัก: โหลด CSV ก่อน และมี CORS Proxy สำรอง
+        rows = await loadSheetRowsByCsvFallback();
+    } catch (csvError) {
+        errors.push(csvError.message || String(csvError));
+        console.warn("CSV/proxy load failed, trying JSONP", csvError);
+        try {
+            // วิธีสำรอง: GViz JSONP
+            rows = await loadSheetRowsByJsonp();
+        } catch (jsonpError) {
+            errors.push(jsonpError.message || String(jsonpError));
+            console.error(jsonpError);
+            throw new Error(`Sync Google Sheet ไม่สำเร็จ (${errors.join(" | ")})`);
+        }
+    }
+
+    if (rows.length < 2) {
+        throw new Error("ไม่พบข้อมูลใน Google Sheet หรือ Sheet ยังไม่มีแถวข้อมูล");
+    }
+
+    const headerRowIndex = findHeaderRowIndex(rows);
+    const headers = rows[headerRowIndex].map(normalizeHeader);
+
+    sheetDatabase = rows.slice(headerRowIndex + 1).map(row => {
+        const rowObject = { __rawValues: row };
+        headers.forEach((header, index) => {
+            if (header) rowObject[header] = row[index] || "";
+        });
+        return mapSheetRowToData(rowObject);
+    }).filter(item => item.pocNumber && item.pocNumber !== "-");
+
+    lastSyncTime = new Date();
+    return sheetDatabase;
+}
+
+function findDataByPoc(database, pocInput) {
+    const target = normalizePoc(pocInput);
+
+    // หาแบบตรง + เทียบเลขล้วนจาก field pocNumber
+    let found = database.find(item => isSamePoc(item.pocNumber, target));
+    if (found) return found;
+
+    // fallback: หาในทุก cell ของแถวนั้น เผื่อ POC อยู่คนละคอลัมน์ หรือมีอักขระพิเศษปน
+    found = database.find(item => (item.__rawValues || []).some(cell => isSamePoc(cell, target)));
+    if (found) return found;
+
+    // fallback เพิ่ม: บาง cell อาจมีข้อความยาว เช่น "เลข POC: POC-202606060891"
+    const targetDigits = pocDigits(target);
+    return database.find(item => (item.__rawValues || []).some(cell => {
+        const cellDigits = pocDigits(cell);
+        return targetDigits && cellDigits && cellDigits.includes(targetDigits);
+    }));
+}
+
+let generatedHTML = "";
+
+async function searchAndRenderFull() {
+    const pocInput = document.getElementById('poc-input').value.trim();
+    const portalType = document.getElementById('portal-select').value;
+    const statusDiv = document.getElementById('status');
+    const previewBox = document.getElementById('preview-box');
+    
+    if (!pocInput) {
+        alert("กรุณากรอกเลข POC ก่อนนะคะ");
+        return;
+    }
+
+    statusDiv.innerText = "⏳ กำลัง Sync ข้อมูลจาก Google Sheet...";
+    statusDiv.style.color = "#005a95";
+
+    let database = [];
+    try {
+        database = await loadSheetData(true);
+    } catch (error) {
+        console.error(error);
+        statusDiv.innerText = "❌ Sync Google Sheet ไม่สำเร็จ";
+        statusDiv.style.color = "#dc3545";
+        previewBox.innerHTML = `<div style="text-align: center; font-family: 'Sans Serif', sans-serif; color: red; padding: 10px;">โหลดข้อมูลจาก Google Sheet ไม่สำเร็จ<br>${error.message}</div>`;
+        return;
+    }
+
+    const data = findDataByPoc(database, pocInput);
+    
+    if (!data) {
+        statusDiv.innerText = "❌ ไม่พบรหัส POC นี้";
+        statusDiv.style.color = "#dc3545";
+        const pocList = database.map(item => item.pocNumber).filter(Boolean).slice(0, 10).join(", ");
+        previewBox.innerHTML = `<div style="text-align: center; font-family: 'Sans Serif', sans-serif; color: red; padding: 10px;">ไม่พบข้อมูลของเลข POC: ${pocInput} ในระบบ<br><span style="font-size:12px;color:#666;">Sync แล้ว ${database.length} รายการ${pocList ? " | ตัวอย่าง POC ใน Sheet: " + pocList : ""}</span></div>`;
+        return;
+    }
+
+    // สลับหัวตารางและลิงก์ตามที่เลือกในดรอปดาวน์
+    let portalLabel = "";
+    let manualLink = "";
+    
+    if (portalType === "proxmox") {
+        portalLabel = "Portal Manual<br>Cloud-Open Source (Proxmox)";
+        manualLink = "https://ocp-cloud.inet.co.th/owncloud/index.php/s/76XijkVXFQCseBa";
+    } else {
+        portalLabel = "Portal Manual<br>(Cloud-AHV)";
+        manualLink = "https://ocp-cloud.inet.co.th/owncloud/index.php/s/rM7ERfrMt2GaBGP";
+    }
+
+    generatedHTML = `
+<div style="color: #000000; font-family: 'Sans Serif', sans-serif; font-size: 15px; background-color: #ffffff; max-width: 650px; line-height: 1.5;">
+<p dir="ltr" style="font-family: 'Sans Serif', sans-serif; margin: 0px 0px 10px 0px;"><span style="color: #0000ff; font-weight: bold; font-size: 11pt; font-family: 'Sans Serif', sans-serif;">*** Confidential ***</span></p>
+
+<p dir="ltr" style="font-family: 'Sans Serif', sans-serif; margin: 0px 0px 10px 0px; font-size: 11pt;">เรียนผู้ใช้บริการ</p>
+
+<p dir="ltr" style="font-family: 'Sans Serif', sans-serif; margin: 0px 0px 15px 0px; font-size: 11pt;">ทางบริษัท อินเทอร์เน็ตประเทศไทย จำกัด (มหาชน) (INET) ขอขอบพระคุณผู้ใช้บริการเป็นอย่างสูงที่ให้ความไว้วางใจทดสอบใช้บริการ Cloud (ไม่เสียค่าบริการ) โดยทาง INET ขออนุญาตแจ้งรายละเอียดบริการและรายละเอียดของระบบ ดังนี้</p>
+
+<p dir="ltr" style="font-family: 'Sans Serif', sans-serif; margin: 0px 0px 15px 0px; font-size: 11pt;"><strong style="font-family: 'Sans Serif', sans-serif;">รบกวนผู้ใช้บริการตรวจสอบการใช้งาน Service และยืนยันผลการใช้งาน :</strong> _______________ ( โปรดระบุ: <span style="background-color: #00ff00; padding: 2px 4px; font-weight: bold; font-family: 'Sans Serif', sans-serif;">ใช้งานได้</span> / <span style="background-color: #ff0000; color: white; padding: 2px 4px; font-weight: bold; font-family: 'Sans Serif', sans-serif;">ใช้งานไม่ได้</span> )</p>
+<br>
+
+<table border="1" style="font-family: 'Sans Serif', sans-serif; border-collapse: collapse; width: 100%; border: 1px solid #000000;">
+    <tbody>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; width: 180px; font-weight: bold;">SO-NUMBER</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; color: #000; font-weight: bold;">${data.pocNumber}</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">Customer Name</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; color: #000000;">${data.customerName}</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">Service</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; color: #000000;">${data.serviceType}</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">ระยะเวลาในการทดสอบ</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; color: #000000;">${data.startDate} - ${data.endDate}</td>
+        </tr>
+    </tbody>
+</table>
+<br>
+
+<table border="1" style="font-family: 'Sans Serif', sans-serif; border-collapse: collapse; width: 100%; border: 1px solid #000000;">
+    <tbody>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; width: 180px; font-weight: bold;">Terms of Use</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"><a href="https://ocp-cloud.inet.co.th/owncloud/index.php/s/dVtV53eqo10Hrmj" target="_blank" style="font-family: 'Sans Serif', sans-serif; color: #005a95; text-decoration: underline;">https://ocp-cloud.inet.co.th/owncloud/index.php/s/dVtV53eqo10Hrmj</a></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">SLA</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"><a href="https://ocp-cloud.inet.co.th/owncloud/index.php/s/7mmzlX0fQp7FfsW" target="_blank" style="font-family: 'Sans Serif', sans-serif; color: #005a95; text-decoration: underline;">https://ocp-cloud.inet.co.th/owncloud/index.php/s/7mmzlX0fQp7FfsW</a></td>
+        </tr>
+    </tbody>
+</table>
+<br>
+
+<p dir="ltr" style="font-family: 'Sans Serif', sans-serif; margin: 10px 0px 10px 0px; font-weight: bold; font-size: 11pt;">สำหรับการ Activate การใช้งาน รบกวนเข้าใช้งานผ่าน Web Portal เพื่อดำเนินการ Power On VM</p>
+
+<table border="1" style="font-family: 'Sans Serif', sans-serif; border-collapse: collapse; width: 100%; border: 1px solid #000000;">
+    <tbody>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; width: 180px; font-weight: bold;">${portalLabel}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"><a href="${manualLink}" target="_blank" style="font-family: 'Sans Serif', sans-serif; color: #005a95; text-decoration: underline;">${manualLink}</a></td>
+        </tr>
+    </tbody>
+</table>
+<br>
+
+<table border="1" style="font-family: 'Sans Serif', sans-serif; border-collapse: collapse; width: 100%; border: 1px solid #000000;">
+    <tbody>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; width: 180px; font-weight: bold;">Link Portal</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; width: 250px; font-weight: bold; color: #000;">${data.portalLink}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">Note</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">Username</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; color: #000;">${data.portalUser}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">Password</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">จัดส่งทางอีเมล์ถัดไป ทาง Email : ${data.customerEmail}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">จำนวน VM</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">1</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+    </tbody>
+</table>
+<br>
+
+<table border="1" style="font-family: 'Sans Serif', sans-serif; border-collapse: collapse; width: 100%; border: 1px solid #000000;">
+    <tbody>
+        <tr style="background-color: #5b9bd5; color: #000; font-weight: bold;">
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; width: 180px;">VM Name #1</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; width: 250px;">${data.vmName}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Note</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">IP Private</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">${data.ipPrivate}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">IP Public</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; color: #ff0000; font-weight: bold;">${data.ipPublic}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; color: #ff0000; font-weight: bold;">${data.sshPort}</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">Username</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">${data.vmUser}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">Password</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">จัดส่งทางอีเมล์ถัดไป ทาง Email : ${data.customerEmail}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr style="background-color: #70ad47; color: #000; font-weight: bold;">
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Specification</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">vCPU (core)</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">${data.vCpu}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">vRAM (GB)</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">${data.vRam}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">vDisk (GB)</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">${data.vDisk}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; background-color: #bfbfbf; padding: 6px 10px; border: 1px solid #000000; font-weight: bold;">OS</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">${data.os}</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;"></td>
+        </tr>
+    </tbody>
+</table>
+<br>
+
+<p dir="ltr" style="font-family: 'Sans Serif', sans-serif; margin: 10px 0px 10px 0px; font-weight: bold; font-size: 11pt; color: #000;">Policy Firewall</p>
+
+<table border="1" style="font-family: 'Sans Serif', sans-serif; border-collapse: collapse; width: 100%; border: 1px solid #000000;">
+    <thead>
+        <tr style="background-color: #ffc000; color: #000; font-weight: bold; text-align: left;">
+            <th style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; width: 120px;">Port</th>
+            <th style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000; width: 120px;">TCP or UDP</th>
+            <th style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Service or Protocol Name</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">53</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">TCP/UDP</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Domain Name System (DNS)</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">80</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">TCP</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Hypertext Transfer Protocol (HTTP)</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">443</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">TCP</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Secure Sockets Layer (SSL, or "HTTPS")</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">-</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">ICMP</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Internet Control Message Protocol</td>
+        </tr>
+        <tr>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">123</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">UDP</td>
+            <td style="font-family: 'Sans Serif', sans-serif; font-size: 14px; padding: 6px 10px; border: 1px solid #000000;">Network Time Protocol (NTP)</td>
+        </tr>
+    </tbody>
+</table>
+<br><br>
+
+<p style="font-family: 'Sans Serif', sans-serif; font-size: 14px; line-height: 1.5; color: #333; margin: 0px 0px 15px 0px;">
+    ทั้งนี้ ทาง INET หวังเป็นอย่างยิ่งว่าผู้ใช้บริการจะได้รับความสะดวกในการทดสอบ หากต้องการสอบถามเพิ่มเติม สามารถติดต่อทาง INET ได้ตลอด 24 ชั่วโมง ทาง <a href="mailto:noc@inet.co.th" style="font-family: 'Sans Serif', sans-serif; color: #005a95;">noc@inet.co.th</a> และ 02-257-7111
+</p>
+<br>
+
+<p style="font-family: 'Sans Serif', sans-serif; font-size: 13px; line-height: 1.6; color: #444; font-weight: bold; margin-top: 15px;">
+    หมายเหตุ :<br>
+    - ปัจจุบันทาง INET จะปิดการเข้าถึงผ่าน Public ทั้งจากภายนอก VM และภายใน VM เพื่อความปลอดภัยในการใช้งานระบบ Cloud หากทางผู้ใช้บริการต้องการเข้าถึงผ่าน Public รบกวนแจ้งทาง INET ดำเนินการทาง noc@inet.co.th<br>
+    - หากทางผู้ใช้บริการต้องการให้ทาง INET ดำเนินการ Backup VM รบกวนแจ้งทาง INET ดำเนินการทาง noc@inet.co.th<br>
+    - ปัจจุบันทาง INET มีการปิดสิทธิ์การเข้าใช้งาน Administrator และ Root และทำการสร้างบัญชีขึ้นมาใหม่ ที่ระดับสิทธิ์เทียบเท่า เพื่อความปลอดภัยในการใช้งานระบบ Cloud หากทางผู้ใช้บริการต้องการเข้าถึงผ่าน Administrator และ Root รบกวนแจ้งทาง INET ดำเนินการทาง noc@inet.co.th<br>
+    - หากทางผู้ใช้บริการต้องการต่ออายุทดสอบ รบกวนแจ้งทางฝ่ายขายก่อนหมดอายุทดสอบ 7 วัน มิเช่นนั้นทาง INET จะดำเนินการปิดทดสอบเมื่อครบกำหนดระยะเวลา<br>
+    - บริษัทฯ จัดทำเอกสาร INET Cloud Service Terms of Use เพื่อให้ข้อมูลเกี่ยวกับข้อกำหนดหรือเงื่อนไขสำหรับการใช้บริการ ระหว่างผู้ใช้บริการกับบริษัทฯ ทั้งนี้ ไม่ว่าในขณะใดขณะหนึ่งก็ตาม บริษัทฯ สามารถทำการแก้ไขปรับปรุงข้อกำหนดและเงื่อนไขต่าง ๆ ที่ปรากฏในเอกสารนี้ได้ อีกทั้ง บริษัทฯ ขอสงวนสิทธิในการเปลี่ยนแปลงรายละเอียดข้อกำหนดและเงื่อนไขต่าง ๆ ในเอกสารนี้ได้ โดยไม่ต้องทำการแจ้งให้ผู้ใช้บริการทราบแต่อย่างใด ให้ถือเป็นความรับผิดชอบของผู้ใช้บริการที่จะต้องตรวจสอบรายละเอียดข้อกำหนดและเงื่อนไขสำหรับการใช้บริการอย่างสม่ำเสมอ<br>
+    - ในการติดตั้ง Service ภายใน Operating System ของทางผู้ใช้บริการ ทาง INET แนะนำให้มีการ Setup Start Service Auto เพื่อเพิ่มประสิทธิภาพในการใช้บริการ Virtual Machine และสอดคล้องกับระบบ Virtual Machine ที่มีการ Auto Start กรณี Hardware Failure
+</p>
+</div>
+    `;
+
+    previewBox.innerHTML = generatedHTML;
+    statusDiv.innerText = `\u2705 ดึงข้อมูลสำเร็จ! (แสดงผลคู่มือรูปแบบ ${portalType.toUpperCase()})`;
+    statusDiv.style.color = "#28a745";
+}
+
+function copyHTMLCode() {
+    if (!generatedHTML) return alert("โปรดกดดึงข้อมูลตารางก่อนคัดลอกนะคะ");
+    navigator.clipboard.writeText(generatedHTML).then(() => {
+        alert("\uD83D\uDCCB คัดลอกโค้ดสำเร็จ! สามารถนำไปวางส่งอีเมลได้ทันทีค่ะน้อง Faii");
+    });
+}
+</script>
+</body>
+</html>
